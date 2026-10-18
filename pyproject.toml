@@ -1,0 +1,22 @@
+[project]
+name = "ai-censur"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "SunilS97", email = "111933521+SunilS97@users.noreply.github.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi[all]>=0.143.3",
+    "rich>=15.0.0",
+    "scalar-fastapi>=1.9.1",
+    "whisperx>=3.8.6",
+]
+
+[project.scripts]
+ai-censur = "ai_censur:main"
+
+[build-system]
+requires = ["uv_build>=0.13.1,<0.14.0"]
+build-backend = "uv_build"
