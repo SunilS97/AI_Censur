@@ -8,6 +8,7 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "better-profanity>=0.7.0",
     "fastapi[all]>=0.143.3",
     "rich>=15.0.0",
     "scalar-fastapi>=1.9.1",
@@ -20,3 +21,8 @@ ai-censur = "ai_censur:main"
 [build-system]
 requires = ["uv_build>=0.13.1,<0.14.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.17.1",
+]

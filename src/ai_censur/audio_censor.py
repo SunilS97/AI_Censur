@@ -1,8 +1,17 @@
 from pathlib import Path
-from typing import Any
+from typing import Any, NotRequired, TypedDict
 
 import whisperx
+from better_profanity import profanity
 from rich import print_json
+
+
+class Word(TypedDict):
+    word: str
+    start: float
+    end: float
+    score: float
+    flagged: NotRequired[bool]
 
 
 class AudioCensor:
@@ -62,9 +71,20 @@ class AudioCensor:
             "word_segments": word_segments,
         }
 
+    def detect_profanity(self, word_segments: list[Word]) -> list[Word]:
+        for word_segment in word_segments:
+            word_text = word_segment.get("word")
+            if not isinstance(word_text, str):
+                raise TypeError("Each word segment must contain a string 'word' field")
+
+            word_segment["flagged"] = profanity.contains_profanity(word_text)
+
+        return word_segments
+
 
 if __name__ == "__main__":
     project_root = Path(__file__).resolve().parents[2]
     sample_audio_path = project_root / "sample.wav"
     audio_censor = AudioCensor()
-    print_json(data=audio_censor.transcribe_audio(str(sample_audio_path)))
+    transcription = audio_censor.transcribe_audio(str(sample_audio_path))
+    print_json(data=audio_censor.detect_profanity(transcription["word_segments"]))

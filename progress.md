@@ -7,7 +7,7 @@ Build a full-stack audio censoring app with a FastAPI backend and React frontend
 ## Current status
 
 - The repository is an initial Python package scaffold; no frontend or audio-processing workflow is present yet.
-- `pyproject.toml` targets Python 3.12+ and declares `fastapi[all]`, `rich`, `scalar-fastapi`, and `whisperx`; dependencies are locked in `uv.lock`.
+- `pyproject.toml` targets Python 3.12+ and declares `better-profanity`, `fastapi[all]`, `rich`, `scalar-fastapi`, and `whisperx`; Ruff is configured as a development dependency. Dependencies are locked in `uv.lock`.
 - `.python-version` pins the project environment to Python 3.12.
 - `src/ai_censur/main.py` contains a placeholder entry point. `src/ai_censur/audio_censor.py` implements CPU transcription and forced alignment. `src/ai_censur/__init__.py` and `README.md` are empty.
 - `tests/test_audio_censor.py` contains focused unit tests for the transcription workflow.
@@ -27,6 +27,10 @@ Build a full-stack audio censoring app with a FastAPI backend and React frontend
 - Ran the full CPU transcription and forced alignment successfully on the root `sample.wav`. It returned one segment and word timings. Installed FFmpeg 9.0.1 user-scoped because WhisperX requires the FFmpeg executable to decode audio; after updating the process PATH, the run succeeded. A TorchCodec warning remains, but did not prevent the WhisperX FFmpeg audio-loading path from succeeding.
 - Updated the transcription result to return a top-level `segments` list and an independently flattened `word_segments` list. Updated empty-transcript behavior and focused tests accordingly.
 - Validation: reran `sample.wav` successfully and confirmed the output includes the original aligned segment structure plus three flattened word segments. All 4 focused unit tests pass; `uv lock --check` and Python compilation pass.
+- Added a `Word` TypedDict and `AudioCensor.detect_profanity()` using `better-profanity`; each word segment receives a `flagged` boolean, false for clean words and true for profane words. Added focused tests and updated the sample runner to print the detected word segments.
+- Validation: all 6 focused unit tests pass, `uv lock --check` and Python compilation pass, and running the sample produced three word segments with only `fuck` flagged `true`.
+- Added Ruff as a development dependency. Ruff initially found import ordering, a `ValueError`/`TypeError` mismatch for an invalid word field, and two formatting differences; fixed these and adjusted the focused test to expect `TypeError`.
+- Validation: `uv run ruff check .` passes with “All checks passed!”, `uv run ruff format --check .` reports all 7 files formatted, all 6 unit tests pass, and `uv lock --check` passes.
 
 ## Next
 

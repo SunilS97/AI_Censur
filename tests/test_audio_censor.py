@@ -44,9 +44,7 @@ class AudioCensorTests(unittest.TestCase):
                 "start": 0.0,
                 "end": 1.0,
                 "text": "Hello.",
-                "words": [
-                    {"word": "Hello", "start": 0.1, "end": 0.8, "score": 0.99}
-                ],
+                "words": [{"word": "Hello", "start": 0.1, "end": 0.8, "score": 0.99}],
             }
         ]
         self.align.return_value = {"segments": expected_segments}
@@ -91,6 +89,48 @@ class AudioCensorTests(unittest.TestCase):
     def test_reports_missing_audio_file(self) -> None:
         with self.assertRaises(FileNotFoundError):
             self.audio_censor.transcribe_audio("missing-audio.wav")
+
+    def test_detects_profanity_and_defaults_clean_words_to_not_flagged(self) -> None:
+        word_segments = [
+            {"word": "Go", "start": 0.0, "end": 0.2, "score": 0.99},
+            {"word": "fuck", "start": 0.2, "end": 0.5, "score": 0.95},
+            {"word": "yourself.", "start": 0.5, "end": 1.0, "score": 0.92},
+        ]
+
+        result = self.audio_censor.detect_profanity(word_segments)  # type: ignore[arg-type]
+
+        self.assertEqual(
+            result,
+            [
+                {
+                    "word": "Go",
+                    "start": 0.0,
+                    "end": 0.2,
+                    "score": 0.99,
+                    "flagged": False,
+                },
+                {
+                    "word": "fuck",
+                    "start": 0.2,
+                    "end": 0.5,
+                    "score": 0.95,
+                    "flagged": True,
+                },
+                {
+                    "word": "yourself.",
+                    "start": 0.5,
+                    "end": 1.0,
+                    "score": 0.92,
+                    "flagged": False,
+                },
+            ],
+        )
+
+    def test_rejects_word_segment_without_string_word(self) -> None:
+        with self.assertRaisesRegex(TypeError, "string 'word' field"):
+            self.audio_censor.detect_profanity(  # type: ignore[arg-type]
+                [{"start": 0.0, "end": 1.0, "score": 0.9}]
+            )
 
 
 if __name__ == "__main__":
