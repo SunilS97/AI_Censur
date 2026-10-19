@@ -7,11 +7,11 @@ Build a full-stack audio censoring app with a FastAPI backend and React frontend
 ## Current status
 
 - The repository is an initial Python package scaffold; no frontend or audio-processing workflow is present yet.
-- `pyproject.toml` targets Python 3.12+ and declares `better-profanity`, `fastapi[all]`, `rich`, `scalar-fastapi`, and `whisperx`; Ruff is configured as a development dependency. Dependencies are locked in `uv.lock`.
+- `pyproject.toml` targets Python 3.12+ and declares `better-profanity`, `fastapi[all]`, `pydub`, `rich`, `scalar-fastapi`, and `whisperx`; Ruff is configured as a development dependency. Dependencies are locked in `uv.lock`.
 - `.python-version` pins the project environment to Python 3.12.
 - `src/ai_censur/main.py` contains a placeholder entry point. `src/ai_censur/audio_censor.py` implements CPU transcription and forced alignment. `src/ai_censur/__init__.py` and `README.md` are empty.
 - `tests/test_audio_censor.py` contains focused unit tests for the transcription workflow.
-- `src/ai_censur/audio_censor.py` can also be run directly to transcribe the root `sample.wav` and print aligned JSON.
+- `src/ai_censur/audio_censor.py` can be run directly to transcribe the root `sample.wav`, flag profanity, and produce silent and beeped output files.
 - Project-wide coding expectations and the requirement to keep this log current are recorded in `AGENTS.md`.
 
 ## Completed
@@ -31,6 +31,11 @@ Build a full-stack audio censoring app with a FastAPI backend and React frontend
 - Validation: all 6 focused unit tests pass, `uv lock --check` and Python compilation pass, and running the sample produced three word segments with only `fuck` flagged `true`.
 - Added Ruff as a development dependency. Ruff initially found import ordering, a `ValueError`/`TypeError` mismatch for an invalid word field, and two formatting differences; fixed these and adjusted the focused test to expect `TypeError`.
 - Validation: `uv run ruff check .` passes with “All checks passed!”, `uv run ruff format --check .` reports all 7 files formatted, all 6 unit tests pass, and `uv lock --check` passes.
+- Added `AudioCensor.mute_audio()` using Pydub. It replaces each flagged word's timestamp range with silence by default or a 1 kHz beep when requested, validates paths and timestamps, exports in the requested output format, and returns the output path. Added `pydub` as a project dependency; the direct sample runner creates `sample_muted.wav` and `sample_beeped.wav`.
+- Added a unit test verifying flagged audio is silent, unflagged audio remains audible, and duration is preserved. The test caught and corrected an initial mix-vs-replace implementation error.
+- Validation: all 8 unit tests pass; Ruff lint and format checks, Python compilation, and `uv lock --check` pass. Executed transcription, profanity detection, and muting on `sample.wav`, generating root `sample_muted.wav`. Verified the output duration matches the source (1,672 ms), the flagged interval is silent (`-inf` dBFS), and adjacent unflagged audio remains audible.
+- Added optional `beep: bool = False` to `mute_audio()`, preserving silence as the default and generating a 1 kHz sine beep over flagged intervals when enabled. Added tests for beep output and rejection of non-boolean options.
+- Validation: all 10 unit tests pass; Ruff lint and format checks and `uv lock --check` pass. Generated `sample_beeped.wav` from the actual sample transcription. Verified output duration is 1,672 ms and the flagged region contains an audible tone peaking at approximately 1,000 Hz.
 
 ## Next
 

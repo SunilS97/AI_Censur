@@ -1,8 +1,11 @@
+import math
 from pathlib import Path
 from typing import Any, NotRequired, TypedDict
 
 import whisperx
 from better_profanity import profanity
+from pydub import AudioSegment
+from pydub.generators import Sine
 from rich import print_json
 
 
@@ -81,10 +84,115 @@ class AudioCensor:
 
         return word_segments
 
+    def mute_audio(
+        self,
+        word_segments: list[Word],
+        input_audio_path: str,
+        output_audio_path: str,
+        beep: bool = False,
+    ) -> Path:
+        if not isinstance(input_audio_path, str):
+            raise TypeError("input_audio_path must be a string")
+        if not isinstance(output_audio_path, str):
+            raise TypeError("output_audio_path must be a string")
+        if not isinstance(beep, bool):
+            raise TypeError("beep must be a boolean")
+
+        input_path = Path(input_audio_path)
+        output_path = Path(output_audio_path)
+        if not input_path.is_file():
+            raise FileNotFoundError(
+                f"Input audio file does not exist: {input_audio_path}"
+            )
+        if input_path.resolve() == output_path.resolve():
+            raise ValueError("Output audio path must differ from the input audio path")
+        if not output_path.suffix:
+            raise ValueError("Output audio path must include a file extension")
+        if not output_path.parent.is_dir():
+            raise FileNotFoundError(
+                f"Output directory does not exist: {output_path.parent}"
+            )
+
+        with input_path.open("rb") as input_file:
+            audio = AudioSegment.from_file(input_file, format=input_path.suffix[1:])
+        for word_segment in word_segments:
+            flagged = word_segment.get("flagged", False)
+            if not isinstance(flagged, bool):
+                raise TypeError("Each word segment's 'flagged' field must be a boolean")
+            if not flagged:
+                continue
+
+            start = word_segment.get("start")
+            end = word_segment.get("end")
+            if (
+                isinstance(start, bool)
+                or not isinstance(start, (int, float))
+                or not math.isfinite(start)
+            ):
+                raise TypeError(
+                    "Flagged word segments must have a finite numeric 'start'"
+                )
+            if (
+                isinstance(end, bool)
+                or not isinstance(end, (int, float))
+                or not math.isfinite(end)
+            ):
+                raise TypeError(
+                    "Flagged word segments must have a finite numeric 'end'"
+                )
+            if start < 0 or end <= start:
+                raise ValueError(
+                    "Flagged word segment timestamps must satisfy 0 <= start < end"
+                )
+
+            start_ms = round(start * 1000)
+            end_ms = round(end * 1000)
+            if start_ms >= len(audio):
+                continue
+            end_ms = min(max(end_ms, start_ms + 1), len(audio))
+            if beep:
+                replacement = (
+                    Sine(1000, sample_rate=audio.frame_rate)
+                    .to_audio_segment(duration=end_ms - start_ms)
+                    .set_channels(audio.channels)
+                    .set_sample_width(audio.sample_width)
+                )
+            else:
+                replacement = (
+                    AudioSegment.silent(
+                        duration=end_ms - start_ms,
+                        frame_rate=audio.frame_rate,
+                    )
+                    .set_channels(audio.channels)
+                    .set_sample_width(audio.sample_width)
+                )
+            audio = audio[:start_ms] + replacement + audio[end_ms:]
+
+        output_format = output_path.suffix[1:].lower()
+        with audio.export(output_path, format=output_format):
+            pass
+        return output_path
+
 
 if __name__ == "__main__":
     project_root = Path(__file__).resolve().parents[2]
     sample_audio_path = project_root / "sample.wav"
+    muted_audio_path = project_root / "sample_muted.wav"
+    beeped_audio_path = project_root / "sample_beeped.wav"
     audio_censor = AudioCensor()
     transcription = audio_censor.transcribe_audio(str(sample_audio_path))
-    print_json(data=audio_censor.detect_profanity(transcription["word_segments"]))
+    word_segments = audio_censor.detect_profanity(transcription["word_segments"])
+    print_json(data=word_segments)
+    output_path = audio_censor.mute_audio(
+        word_segments,
+        str(sample_audio_path),
+        str(muted_audio_path),
+    )
+    print(f"Muted audio saved to: {output_path}")
+    beeped_output_path = audio_censor.mute_audio(
+        word_segments,
+        str(sample_audio_path),
+        str(beeped_audio_path),
+        beep=True,
+    )
+    print(f"Beeped audio saved to: {beeped_output_path}")

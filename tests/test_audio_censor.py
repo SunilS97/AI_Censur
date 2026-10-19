@@ -3,6 +3,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from pydub import AudioSegment
+from pydub.generators import Sine
+
 from ai_censur.audio_censor import AudioCensor
 
 
@@ -130,6 +133,100 @@ class AudioCensorTests(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "string 'word' field"):
             self.audio_censor.detect_profanity(  # type: ignore[arg-type]
                 [{"start": 0.0, "end": 1.0, "score": 0.9}]
+            )
+
+    def test_mutes_flagged_words_and_preserves_unflagged_audio(self) -> None:
+        source_audio = Sine(440).to_audio_segment(duration=1000).apply_gain(-3)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_path = Path(temp_dir) / "input.wav"
+            output_path = Path(temp_dir) / "muted.wav"
+            with source_audio.export(input_path, format="wav"):
+                pass
+            word_segments = [
+                {
+                    "word": "clean",
+                    "start": 0.1,
+                    "end": 0.3,
+                    "score": 0.99,
+                    "flagged": False,
+                },
+                {
+                    "word": "profane",
+                    "start": 0.4,
+                    "end": 0.6,
+                    "score": 0.95,
+                    "flagged": True,
+                },
+            ]
+
+            result_path = self.audio_censor.mute_audio(
+                word_segments,
+                str(input_path),
+                str(output_path),  # type: ignore[arg-type]
+            )
+
+            with output_path.open("rb") as output_file:
+                muted_audio = AudioSegment.from_file(output_file, format="wav")
+
+        self.assertEqual(result_path, output_path)
+        self.assertEqual(len(muted_audio), len(source_audio))
+        self.assertEqual(muted_audio[400:600].dBFS, float("-inf"))
+        self.assertNotEqual(muted_audio[100:300].dBFS, float("-inf"))
+
+    def test_rejects_output_path_same_as_input(self) -> None:
+        with (
+            tempfile.NamedTemporaryFile(suffix=".wav") as audio_file,
+            self.assertRaisesRegex(ValueError, "must differ"),
+        ):
+            self.audio_censor.mute_audio(
+                [],
+                audio_file.name,
+                audio_file.name,  # type: ignore[arg-type]
+            )
+
+    def test_beeps_flagged_words_and_preserves_unflagged_audio(self) -> None:
+        source_audio = Sine(440).to_audio_segment(duration=1000).apply_gain(-3)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_path = Path(temp_dir) / "input.wav"
+            output_path = Path(temp_dir) / "beeped.wav"
+            with source_audio.export(input_path, format="wav"):
+                pass
+
+            result_path = self.audio_censor.mute_audio(
+                [
+                    {
+                        "word": "profane",
+                        "start": 0.4,
+                        "end": 0.6,
+                        "score": 0.95,
+                        "flagged": True,
+                    }
+                ],
+                str(input_path),
+                str(output_path),  # type: ignore[arg-type]
+                beep=True,
+            )
+
+            with output_path.open("rb") as output_file:
+                beeped_audio = AudioSegment.from_file(output_file, format="wav")
+
+        self.assertEqual(result_path, output_path)
+        self.assertEqual(len(beeped_audio), len(source_audio))
+        self.assertNotEqual(beeped_audio[400:600].dBFS, float("-inf"))
+        self.assertNotEqual(beeped_audio[100:300].dBFS, float("-inf"))
+
+    def test_rejects_non_boolean_beep_option(self) -> None:
+        with (
+            tempfile.NamedTemporaryFile(suffix=".wav") as audio_file,
+            self.assertRaisesRegex(TypeError, "beep must be a boolean"),
+        ):
+            self.audio_censor.mute_audio(
+                [],
+                audio_file.name,
+                "output.wav",
+                beep=1,  # type: ignore[arg-type]
             )
 
 
