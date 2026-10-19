@@ -6,5 +6,11 @@ dist/
 wheels/
 *.egg-info
 
+# User-uploaded audio (privacy-sensitive)
+Uploads/
+
+# Internal verification tests (not published)
+tests/
+
 # Virtual environments
 .venv

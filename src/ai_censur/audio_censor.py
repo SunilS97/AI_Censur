@@ -169,6 +169,8 @@ class AudioCensor:
             audio = audio[:start_ms] + replacement + audio[end_ms:]
 
         output_format = output_path.suffix[1:].lower()
+        # ffmpeg has no "m4a" muxer; the MP4 audio container is called "ipod".
+        output_format = {"m4a": "ipod"}.get(output_format, output_format)
         with audio.export(output_path, format=output_format):
             pass
         return output_path
