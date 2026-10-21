@@ -12,5 +12,8 @@ Uploads/
 # Internal verification tests (not published)
 tests/
 
+# Secrets and local configuration
+.env
+
 # Virtual environments
 .venv

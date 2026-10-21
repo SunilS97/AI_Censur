@@ -6,7 +6,6 @@ import whisperx
 from better_profanity import profanity
 from pydub import AudioSegment
 from pydub.generators import Sine
-from rich import print_json
 
 
 class Word(TypedDict):
@@ -174,27 +173,3 @@ class AudioCensor:
         with audio.export(output_path, format=output_format):
             pass
         return output_path
-
-
-if __name__ == "__main__":
-    project_root = Path(__file__).resolve().parents[2]
-    sample_audio_path = project_root / "sample.wav"
-    muted_audio_path = project_root / "sample_muted.wav"
-    beeped_audio_path = project_root / "sample_beeped.wav"
-    audio_censor = AudioCensor()
-    transcription = audio_censor.transcribe_audio(str(sample_audio_path))
-    word_segments = audio_censor.detect_profanity(transcription["word_segments"])
-    print_json(data=word_segments)
-    output_path = audio_censor.mute_audio(
-        word_segments,
-        str(sample_audio_path),
-        str(muted_audio_path),
-    )
-    print(f"Muted audio saved to: {output_path}")
-    beeped_output_path = audio_censor.mute_audio(
-        word_segments,
-        str(sample_audio_path),
-        str(beeped_audio_path),
-        beep=True,
-    )
-    print(f"Beeped audio saved to: {beeped_output_path}")
