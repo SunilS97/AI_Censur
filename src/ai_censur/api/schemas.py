@@ -28,14 +28,17 @@ class AudioResponseBase(BaseModel):
         description="When the audio record was created (UTC).",
         examples=["2026-04-17T12:50:35.663387"],
     )
-    censored_file_path: str = Field(
-        description="Name of the censored audio file (no directory).",
+    censored_file_path: str | None = Field(
+        default=None,
+        description="Name of the censored audio file (no directory); null until processing completes.",
         examples=["Censored_sample.wav"],
     )
 
     @field_validator("censored_file_path")
     @classmethod
-    def _keep_file_name_only(cls, value: str) -> str:
+    def _keep_file_name_only(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         return PurePosixPath(PureWindowsPath(value).as_posix()).name
 
 
@@ -122,6 +125,7 @@ AUDIO_NOT_FOUND_RESPONSES: dict[int | str, dict[str, Any]] = {
 }
 
 CENSOR_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
+    401: {"model": ErrorResponse, "description": "Missing or invalid bearer token."},
     400: {
         "model": ErrorResponse,
         "description": "Missing filename, empty or unreadable file.",

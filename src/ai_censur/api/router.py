@@ -37,8 +37,10 @@ router = APIRouter()
     status_code=status.HTTP_200_OK,
     response_model=AudioCreateResponse,
     responses=CENSOR_ERROR_RESPONSES,
+    dependencies=[Depends(get_current_user)],
     summary="Censor profanity in an audio file",
     description=(
+        "Requires a valid `Authorization: Bearer <token>` header. "
         "Upload an audio file (`.wav`, `.mp3`, `.m4a`, `.flac`, `.ogg`; max 50 MB). "
         "The file is saved to `Uploads/`, transcribed, and every profane word is "
         "replaced with a beep. The censored copy is saved as `Censored_<name>` and "

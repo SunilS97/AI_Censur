@@ -12,7 +12,7 @@ from ai_censur.api.router import router
 from ai_censur.api.user_router import router as user_router
 from ai_censur.audio_censor import AudioCensor
 from ai_censur.config import get_jwt_settings
-from ai_censur.database.session import create_db_and_tables, dispose_engine
+from ai_censur.database.session import check_database_connection, dispose_engine
 from ai_censur.utils.constants import UPLOAD_DIR, UPLOADS_URL_PATH
 from ai_censur.utils.system import ensure_ffmpeg_available
 
@@ -30,7 +30,7 @@ both file paths recorded in the database.
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     ensure_ffmpeg_available()
     get_jwt_settings()  # fail fast when JWT_SECRET is missing
-    await create_db_and_tables()
+    await check_database_connection()
     # Models are expensive to load, so build the AudioCensor once per process.
     app.state.audio_censor = await anyio.to_thread.run_sync(AudioCensor)
     try:

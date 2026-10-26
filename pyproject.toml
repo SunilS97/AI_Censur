@@ -8,8 +8,10 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "alembic>=1.20.0",
     "asyncpg>=0.32.0",
     "better-profanity>=0.7.0",
+    "celery>=5.6.3",
     "fastapi[all]>=0.143.3",
     "greenlet>=3.5.6",
     "passlib[argon2]>=1.7.4",
@@ -17,6 +19,7 @@ dependencies = [
     "pydub>=0.25.1",
     "pyjwt>=2.15.1",
     "python-multipart>=0.0.32",
+    "redis>=8.1.0",
     "rich>=15.0.0",
     "scalar-fastapi>=1.9.1",
     "sqlmodel>=0.0.48",

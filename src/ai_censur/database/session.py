@@ -4,6 +4,7 @@ from pathlib import Path
 
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy import text
 from sqlalchemy.engine import URL
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -11,9 +12,6 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-from sqlmodel import SQLModel
-
-from ai_censur.database.models import Audio  # noqa: F401  (registers the table)
 
 logger = logging.getLogger(__name__)
 
@@ -82,10 +80,14 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
     return _session_factory
 
 
-async def create_db_and_tables() -> None:
-    async with get_engine().begin() as connection:
-        await connection.run_sync(SQLModel.metadata.create_all)
-    logger.info("Database tables are ready")
+async def check_database_connection() -> None:
+    """Fail fast at startup when the database is unreachable.
+
+    The schema itself is managed by Alembic (`uv run alembic upgrade head`).
+    """
+    async with get_engine().connect() as connection:
+        await connection.execute(text("SELECT 1"))
+    logger.info("Database connection is ready")
 
 
 async def get_session() -> AsyncGenerator[AsyncSession]:

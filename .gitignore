@@ -12,6 +12,9 @@ Uploads/
 # Internal verification tests (not published)
 tests/
 
+# Sample audio files used for manual testing
+samples/
+
 # Secrets and local configuration
 .env
 
