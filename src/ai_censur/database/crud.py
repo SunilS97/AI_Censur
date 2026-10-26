@@ -4,6 +4,7 @@ import anyio.to_thread
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col
 
 from ai_censur.database.exceptions import EmailAlreadyRegisteredError
 from ai_censur.database.models import Audio, User
@@ -30,8 +31,12 @@ async def get_audio_by_id(session: AsyncSession, audio_id: UUID) -> Audio | None
     return await session.get(Audio, audio_id)
 
 
+async def get_user_by_id(session: AsyncSession, user_id: UUID) -> User | None:
+    return await session.get(User, user_id)
+
+
 async def get_user_by_email(session: AsyncSession, email: str) -> User | None:
-    result = await session.execute(select(User).where(User.email == email))
+    result = await session.execute(select(User).where(col(User.email) == email))
     return result.scalar_one_or_none()
 
 

@@ -116,6 +116,7 @@ SIGNUP_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
 }
 
 AUDIO_NOT_FOUND_RESPONSES: dict[int | str, dict[str, Any]] = {
+    401: {"model": ErrorResponse, "description": "Missing or invalid bearer token."},
     404: {"model": ErrorResponse, "description": "No audio exists with this ID."},
     422: {"description": "The ID is not a valid UUID."},
 }

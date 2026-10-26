@@ -8,7 +8,11 @@ import anyio.to_thread
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ai_censur.api.dependencies import get_audio_censor, get_processing_limiter
+from ai_censur.api.dependencies import (
+    get_audio_censor,
+    get_current_user,
+    get_processing_limiter,
+)
 from ai_censur.api.schemas import (
     AUDIO_NOT_FOUND_RESPONSES,
     CENSOR_ERROR_RESPONSES,
@@ -137,8 +141,12 @@ async def censor(
     "/audio/{audio_id}",
     response_model=AudioRead,
     responses=AUDIO_NOT_FOUND_RESPONSES,
+    dependencies=[Depends(get_current_user)],
     summary="Get a stored audio record",
-    description="Fetch a single audio record by its UUID.",
+    description=(
+        "Fetch a single audio record by its UUID. "
+        "Requires a valid `Authorization: Bearer <token>` header."
+    ),
 )
 async def read_audio(
     audio_id: UUID,

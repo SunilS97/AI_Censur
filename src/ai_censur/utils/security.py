@@ -36,3 +36,21 @@ def create_access_token(user_id: UUID, settings: JWTSettings) -> str:
     return jwt.encode(
         payload, settings.secret.get_secret_value(), algorithm=settings.algorithm
     )
+
+
+def decode_access_token(token: str, settings: JWTSettings) -> UUID:
+    """Return the user id from a valid token.
+
+    Raises jwt.InvalidTokenError for a bad signature, expiry, missing claims or a
+    non-UUID subject.
+    """
+    claims = jwt.decode(
+        token,
+        settings.secret.get_secret_value(),
+        algorithms=[settings.algorithm],
+        options={"require": ["sub", "exp"]},
+    )
+    try:
+        return UUID(claims["sub"])
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise jwt.InvalidTokenError("Invalid subject claim.") from exc
