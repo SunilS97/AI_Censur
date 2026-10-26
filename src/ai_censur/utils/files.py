@@ -60,3 +60,9 @@ def write_file(directory: Path, stem: str, extension: str, content: bytes) -> st
         path.unlink(missing_ok=True)
         raise
     return path.name
+
+
+def remove_files(directory: Path, names: list[str]) -> None:
+    """Best-effort removal of stored files, used to avoid orphans after a failure."""
+    for name in names:
+        (directory / name).unlink(missing_ok=True)

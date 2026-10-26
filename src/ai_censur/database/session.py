@@ -1,12 +1,17 @@
 import logging
-from collections.abc import Iterator
+from collections.abc import AsyncGenerator
 from pathlib import Path
 
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from sqlalchemy import Engine
 from sqlalchemy.engine import URL
-from sqlmodel import Session, SQLModel, create_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+from sqlmodel import SQLModel
 
 from ai_censur.database.models import Audio  # noqa: F401  (registers the table)
 
@@ -34,7 +39,7 @@ class DatabaseSettings(BaseSettings):
     def url(self) -> URL:
         # URL.create escapes special characters in the password safely.
         return URL.create(
-            drivername="postgresql+pg8000",
+            drivername="postgresql+asyncpg",
             username=self.user,
             password=self.password.get_secret_value(),
             host=self.host,
@@ -43,9 +48,9 @@ class DatabaseSettings(BaseSettings):
         )
 
 
-def create_database_engine(settings: DatabaseSettings | None = None) -> Engine:
+def create_database_engine(settings: DatabaseSettings | None = None) -> AsyncEngine:
     settings = settings or DatabaseSettings()
-    return create_engine(
+    return create_async_engine(
         settings.url,
         pool_pre_ping=True,
         pool_size=5,
@@ -54,30 +59,44 @@ def create_database_engine(settings: DatabaseSettings | None = None) -> Engine:
     )
 
 
-_engine: Engine | None = None
+_engine: AsyncEngine | None = None
+_session_factory: async_sessionmaker[AsyncSession] | None = None
 
 
-def get_engine() -> Engine:
-    """Return the process-wide engine, creating it on first use."""
+def get_engine() -> AsyncEngine:
+    """Return the process-wide async engine, creating it on first use."""
     global _engine
     if _engine is None:
         _engine = create_database_engine()
     return _engine
 
 
-def create_db_and_tables() -> None:
-    SQLModel.metadata.create_all(get_engine())
+def get_session_factory() -> async_sessionmaker[AsyncSession]:
+    global _session_factory
+    if _session_factory is None:
+        # expire_on_commit=False keeps loaded attributes readable after commit,
+        # since lazy refresh is not possible on an AsyncSession.
+        _session_factory = async_sessionmaker(
+            get_engine(), class_=AsyncSession, expire_on_commit=False
+        )
+    return _session_factory
+
+
+async def create_db_and_tables() -> None:
+    async with get_engine().begin() as connection:
+        await connection.run_sync(SQLModel.metadata.create_all)
     logger.info("Database tables are ready")
 
 
-def get_session() -> Iterator[Session]:
-    """FastAPI dependency yielding a session that is closed after the request."""
-    with Session(get_engine()) as session:
+async def get_session() -> AsyncGenerator[AsyncSession]:
+    """FastAPI dependency yielding an async session closed after the request."""
+    async with get_session_factory()() as session:
         yield session
 
 
-def dispose_engine() -> None:
-    global _engine
+async def dispose_engine() -> None:
+    global _engine, _session_factory
     if _engine is not None:
-        _engine.dispose()
-        _engine = None
+        await _engine.dispose()
+    _engine = None
+    _session_factory = None

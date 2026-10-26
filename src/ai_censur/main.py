@@ -7,8 +7,11 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from scalar_fastapi import get_scalar_api_reference
 
+from ai_censur.api.auth_router import router as auth_router
 from ai_censur.api.router import router
+from ai_censur.api.user_router import router as user_router
 from ai_censur.audio_censor import AudioCensor
+from ai_censur.config import get_jwt_settings
 from ai_censur.database.session import create_db_and_tables, dispose_engine
 from ai_censur.utils.constants import UPLOAD_DIR, UPLOADS_URL_PATH
 from ai_censur.utils.system import ensure_ffmpeg_available
@@ -26,13 +29,14 @@ both file paths recorded in the database.
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     ensure_ffmpeg_available()
-    await anyio.to_thread.run_sync(create_db_and_tables)
+    get_jwt_settings()  # fail fast when JWT_SECRET is missing
+    await create_db_and_tables()
     # Models are expensive to load, so build the AudioCensor once per process.
     app.state.audio_censor = await anyio.to_thread.run_sync(AudioCensor)
     try:
         yield
     finally:
-        await anyio.to_thread.run_sync(dispose_engine)
+        await dispose_engine()
 
 
 app = FastAPI(
@@ -46,6 +50,8 @@ app = FastAPI(
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 app.mount(UPLOADS_URL_PATH, StaticFiles(directory=UPLOAD_DIR), name="uploads")
 app.include_router(router)
+app.include_router(user_router)
+app.include_router(auth_router)
 
 
 @app.get("/docs", include_in_schema=False)
