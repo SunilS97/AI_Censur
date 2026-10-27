@@ -1,12 +1,10 @@
 from typing import Annotated
 
-import anyio
 import jwt
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ai_censur.audio_censor import AudioCensor
 from ai_censur.config import JWTSettings, get_jwt_settings
 from ai_censur.database.crud import get_user_by_id
 from ai_censur.database.models import User
@@ -35,22 +33,3 @@ async def get_current_user(
     if user is None:
         raise unauthorized
     return user
-
-
-def get_audio_censor(request: Request) -> AudioCensor:
-    audio_censor = getattr(request.app.state, "audio_censor", None)
-    if audio_censor is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Audio censoring models are not loaded yet.",
-        )
-    return audio_censor
-
-
-def get_processing_limiter(app: FastAPI) -> anyio.CapacityLimiter:
-    # The models are shared, so run one censoring job at a time.
-    limiter = getattr(app.state, "processing_limiter", None)
-    if limiter is None:
-        limiter = anyio.CapacityLimiter(1)
-        app.state.processing_limiter = limiter
-    return limiter

@@ -12,6 +12,7 @@ from pydantic import (
     field_validator,
 )
 
+from ai_censur.database.models import AudioStatus
 from ai_censur.utils.constants import PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH
 
 
@@ -32,6 +33,10 @@ class AudioResponseBase(BaseModel):
         default=None,
         description="Name of the censored audio file (no directory); null until processing completes.",
         examples=["Censored_sample.wav"],
+    )
+    status: AudioStatus = Field(
+        description="Processing state: pending, processing, completed or failed.",
+        examples=["pending"],
     )
 
     @field_validator("censored_file_path")
@@ -120,8 +125,12 @@ SIGNUP_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
 
 AUDIO_NOT_FOUND_RESPONSES: dict[int | str, dict[str, Any]] = {
     401: {"model": ErrorResponse, "description": "Missing or invalid bearer token."},
-    404: {"model": ErrorResponse, "description": "No audio exists with this ID."},
+    404: {
+        "model": ErrorResponse,
+        "description": "No audio with this ID exists for the authenticated user.",
+    },
     422: {"description": "The ID is not a valid UUID."},
+    500: {"model": ErrorResponse, "description": "Reading the audio failed."},
 }
 
 CENSOR_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
@@ -137,10 +146,10 @@ CENSOR_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     },
     500: {
         "model": ErrorResponse,
-        "description": "Saving, censoring or recording the audio failed.",
+        "description": "Saving the upload or recording the audio failed.",
     },
     503: {
         "model": ErrorResponse,
-        "description": "Censoring models are not loaded yet.",
+        "description": "The processing queue is unavailable; nothing was stored.",
     },
 }

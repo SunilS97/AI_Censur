@@ -7,19 +7,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
 from ai_censur.database.exceptions import EmailAlreadyRegisteredError
-from ai_censur.database.models import Audio, AudioStatus, User
+from ai_censur.database.models import Audio, User
 from ai_censur.utils.security import hash_password
 
 
 async def save_audio_record(
-    session: AsyncSession, uncensored_file_path: str, censored_file_path: str
+    session: AsyncSession, uncensored_file_path: str, user_id: UUID
 ) -> Audio:
-    # /censor still censors synchronously, so the record is already finished.
-    audio = Audio(
-        uncensored_file_path=uncensored_file_path,
-        censored_file_path=censored_file_path,
-        status=AudioStatus.COMPLETED,
-    )
+    """Store a new upload as `pending` for its owner; the Celery worker does the rest."""
+    audio = Audio(uncensored_file_path=uncensored_file_path, user_id=user_id)
     session.add(audio)
     try:
         await session.commit()
@@ -29,8 +25,27 @@ async def save_audio_record(
     return audio
 
 
-async def get_audio_by_id(session: AsyncSession, audio_id: UUID) -> Audio | None:
-    return await session.get(Audio, audio_id)
+async def delete_audio_record(session: AsyncSession, audio: Audio) -> None:
+    await session.delete(audio)
+    try:
+        await session.commit()
+    except BaseException:
+        await session.rollback()
+        raise
+
+
+async def get_audio_for_user(
+    session: AsyncSession, audio_id: UUID, user_id: UUID
+) -> Audio | None:
+    """Return the audio only when it belongs to the user.
+
+    Ownership is part of the query, so another user's audio is indistinguishable
+    from a missing one.
+    """
+    result = await session.execute(
+        select(Audio).where(col(Audio.id) == audio_id, col(Audio.user_id) == user_id)
+    )
+    return result.scalar_one_or_none()
 
 
 async def get_user_by_id(session: AsyncSession, user_id: UUID) -> User | None:

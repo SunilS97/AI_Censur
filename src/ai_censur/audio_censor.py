@@ -1,11 +1,23 @@
+import logging
 import math
 from pathlib import Path
 from typing import Any, NotRequired, TypedDict
+from uuid import UUID
 
 import whisperx
 from better_profanity import profanity
 from pydub import AudioSegment
 from pydub.generators import Sine
+from sqlalchemy import Engine, create_engine, update
+from sqlalchemy.orm import Session
+from sqlmodel import col
+
+from ai_censur.database.models import Audio, AudioStatus
+from ai_censur.database.session import DatabaseSettings
+from ai_censur.utils.constants import CENSORED_PREFIX, UPLOAD_DIR
+from ai_censur.utils.files import reserve_path
+
+logger = logging.getLogger(__name__)
 
 
 class Word(TypedDict):
@@ -16,8 +28,18 @@ class Word(TypedDict):
     flagged: NotRequired[bool]
 
 
+def create_sync_engine() -> Engine:
+    """Synchronous engine for Celery workers, which run plain blocking tasks.
+
+    It reuses the API's database settings but swaps the asyncpg driver for psycopg2.
+    """
+    url = DatabaseSettings().url.set(drivername="postgresql+psycopg2")
+    return create_engine(url, pool_pre_ping=True, pool_size=2, max_overflow=2)
+
+
 class AudioCensor:
-    def __init__(self) -> None:
+    def __init__(self, engine: Engine | None = None) -> None:
+        self.engine = engine or create_sync_engine()
         self.model_name = "small.en"
         self.language = "en"
         self.device = "cpu"
@@ -34,6 +56,81 @@ class AudioCensor:
             language_code=self.language,
             device=self.device,
         )
+
+    def censor_file(self, directory: Path, stored_name: str) -> str:
+        """Transcribe, flag profanity and beep it out; returns the censored file name."""
+        input_path = directory / stored_name
+        censored_path = reserve_path(
+            directory, f"{CENSORED_PREFIX}{input_path.stem}", input_path.suffix
+        )
+        try:
+            transcription = self.transcribe_audio(str(input_path))
+            word_segments = self.detect_profanity(transcription["word_segments"])
+            self.mute_audio(
+                word_segments, str(input_path), str(censored_path), beep=True
+            )
+        except BaseException:
+            censored_path.unlink(missing_ok=True)
+            raise
+        return censored_path.name
+
+    def process_audio(self, audio_id: UUID) -> AudioStatus | None:
+        """Run the pending -> processing -> completed/failed workflow for one record.
+
+        Returns the final status, or None when the record is missing or was already
+        claimed (so a duplicate delivery never censors the same audio twice).
+        """
+        stored_path = self._claim_audio(audio_id)
+        if stored_path is None:
+            return None
+
+        censored_name: str | None = None
+        try:
+            # Only the file name is trusted, so a stored path cannot leave Uploads/.
+            censored_name = self.censor_file(UPLOAD_DIR, Path(stored_path).name)
+            self._finish_audio(
+                audio_id, AudioStatus.COMPLETED, f"{UPLOAD_DIR.name}/{censored_name}"
+            )
+        except Exception:
+            logger.exception("Censoring failed for audio %s", audio_id)
+            if censored_name is not None:
+                (UPLOAD_DIR / censored_name).unlink(missing_ok=True)
+            return self._mark_failed(audio_id)
+        logger.info("Audio %s censored", audio_id)
+        return AudioStatus.COMPLETED
+
+    def _claim_audio(self, audio_id: UUID) -> str | None:
+        # The status guard makes the pending -> processing move atomic.
+        statement = (
+            update(Audio)
+            .where(col(Audio.id) == audio_id, col(Audio.status) == AudioStatus.PENDING)
+            .values(status=AudioStatus.PROCESSING)
+            .returning(col(Audio.uncensored_file_path))
+        )
+        with Session(self.engine) as session, session.begin():
+            stored_path = session.execute(statement).scalar_one_or_none()
+        if stored_path is None:
+            logger.warning("Audio %s is missing or not pending; skipping", audio_id)
+        return stored_path
+
+    def _finish_audio(
+        self, audio_id: UUID, status: AudioStatus, censored_file_path: str | None
+    ) -> None:
+        statement = (
+            update(Audio)
+            .where(col(Audio.id) == audio_id)
+            .values(status=status, censored_file_path=censored_file_path)
+        )
+        with Session(self.engine) as session, session.begin():
+            session.execute(statement)
+
+    def _mark_failed(self, audio_id: UUID) -> AudioStatus | None:
+        try:
+            self._finish_audio(audio_id, AudioStatus.FAILED, None)
+        except Exception:
+            logger.exception("Could not mark audio %s as failed", audio_id)
+            return None
+        return AudioStatus.FAILED
 
     def transcribe_audio(self, audio_file_path: str) -> dict[str, Any]:
         if not isinstance(audio_file_path, str):

@@ -1,6 +1,5 @@
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Optional
 from uuid import UUID, uuid4
 
 from sqlalchemy import DateTime, Enum
@@ -43,12 +42,12 @@ class Audio(SQLModel, table=True):
         sa_column_kwargs={"server_default": AudioStatus.PENDING.value},
         nullable=False,
     )
-    # Nullable until /censor requires authentication and always has an owner.
-    user_id: UUID | None = Field(
-        default=None, foreign_key="users.id", ondelete="CASCADE", index=True
+    # Every audio belongs to the user who uploaded it; deleting the user deletes it.
+    user_id: UUID = Field(
+        foreign_key="users.id", ondelete="CASCADE", index=True, nullable=False
     )
 
-    user: Optional["User"] = Relationship(back_populates="audios")
+    user: "User" = Relationship(back_populates="audios")
 
 
 class User(SQLModel, table=True):

@@ -5,27 +5,26 @@ from uuid import UUID
 
 import anyio
 import anyio.to_thread
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ai_censur.api.dependencies import (
-    get_audio_censor,
-    get_current_user,
-    get_processing_limiter,
-)
+from ai_censur.api.dependencies import get_current_user
 from ai_censur.api.schemas import (
     AUDIO_NOT_FOUND_RESPONSES,
     CENSOR_ERROR_RESPONSES,
     AudioCreateResponse,
     AudioRead,
 )
-from ai_censur.audio_censor import AudioCensor
-from ai_censur.database.crud import get_audio_by_id, save_audio_record
-from ai_censur.database.models import Audio
+from ai_censur.database.crud import (
+    delete_audio_record,
+    get_audio_for_user,
+    save_audio_record,
+)
+from ai_censur.database.models import Audio, User
 from ai_censur.database.session import get_session
-from ai_censur.utils.censoring import censor_saved_audio
 from ai_censur.utils.constants import ALLOWED_AUDIO_EXTENSIONS, UPLOAD_DIR
 from ai_censur.utils.files import read_upload, remove_files, sanitize_stem, write_file
+from ai_censur.worker.processing import process_audio
 
 logger = logging.getLogger(__name__)
 
@@ -34,25 +33,23 @@ router = APIRouter()
 
 @router.post(
     "/censor",
-    status_code=status.HTTP_200_OK,
+    status_code=status.HTTP_202_ACCEPTED,
     response_model=AudioCreateResponse,
     responses=CENSOR_ERROR_RESPONSES,
-    dependencies=[Depends(get_current_user)],
-    summary="Censor profanity in an audio file",
+    summary="Queue an audio file for censoring",
     description=(
         "Requires a valid `Authorization: Bearer <token>` header. "
         "Upload an audio file (`.wav`, `.mp3`, `.m4a`, `.flac`, `.ogg`; max 50 MB). "
-        "The file is saved to `Uploads/`, transcribed, and every profane word is "
-        "replaced with a beep. The censored copy is saved as `Censored_<name>` and "
-        "the stored audio record is returned. Processing runs on CPU, so allow "
-        "several seconds."
+        "The file is saved to `Uploads/` and queued for a background worker; the "
+        "record is returned immediately with status `pending`. Poll "
+        "`GET /audio/{id}` to follow `pending` -> `processing` -> `completed` "
+        "(or `failed`); `censored_file_path` is set once it completes."
     ),
 )
 async def censor(
-    request: Request,
     file: UploadFile,
-    audio_censor: Annotated[AudioCensor, Depends(get_audio_censor)],
     session: Annotated[AsyncSession, Depends(get_session)],
+    current_user: Annotated[User, Depends(get_current_user)],
 ) -> Audio:
     if not file.filename:
         raise HTTPException(
@@ -105,35 +102,31 @@ async def censor(
         ) from exc
 
     try:
-        censored_name = await anyio.to_thread.run_sync(
-            censor_saved_audio,
-            audio_censor,
-            UPLOAD_DIR,
-            stored_name,
-            limiter=get_processing_limiter(request.app),
-        )
-    except Exception as exc:
-        logger.exception("Failed to censor uploaded audio")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to censor the uploaded audio.",
-        ) from exc
-
-    try:
         audio = await save_audio_record(
-            session,
-            f"{UPLOAD_DIR.name}/{stored_name}",
-            f"{UPLOAD_DIR.name}/{censored_name}",
+            session, f"{UPLOAD_DIR.name}/{stored_name}", current_user.id
         )
     except Exception as exc:
         logger.exception("Failed to store the audio record")
         # Avoid orphaned files that have no database record.
-        await anyio.to_thread.run_sync(
-            remove_files, UPLOAD_DIR, [stored_name, censored_name]
-        )
+        await anyio.to_thread.run_sync(remove_files, UPLOAD_DIR, [stored_name])
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to store the audio record.",
+        ) from exc
+
+    try:
+        # The record is committed first, so the worker can always find it.
+        await anyio.to_thread.run_sync(process_audio.delay, str(audio.id))
+    except Exception as exc:
+        logger.exception("Failed to queue audio %s for processing", audio.id)
+        try:
+            await delete_audio_record(session, audio)
+        except Exception:
+            logger.exception("Failed to remove unqueued audio record %s", audio.id)
+        await anyio.to_thread.run_sync(remove_files, UPLOAD_DIR, [stored_name])
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The processing queue is unavailable. Please try again later.",
         ) from exc
 
     return audio
@@ -143,18 +136,26 @@ async def censor(
     "/audio/{audio_id}",
     response_model=AudioRead,
     responses=AUDIO_NOT_FOUND_RESPONSES,
-    dependencies=[Depends(get_current_user)],
     summary="Get a stored audio record",
     description=(
         "Fetch a single audio record by its UUID. "
-        "Requires a valid `Authorization: Bearer <token>` header."
+        "Requires a valid bearer token, and the audio must belong to the "
+        "authenticated user; otherwise the response is 404."
     ),
 )
 async def read_audio(
     audio_id: UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
+    current_user: Annotated[User, Depends(get_current_user)],
 ) -> Audio:
-    audio = await get_audio_by_id(session, audio_id)
+    try:
+        audio = await get_audio_for_user(session, audio_id, current_user.id)
+    except Exception as exc:
+        logger.exception("Failed to read audio %s", audio_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to read the audio record.",
+        ) from exc
     if audio is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

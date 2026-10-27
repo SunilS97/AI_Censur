@@ -16,3 +16,6 @@ celery_app.conf.update(
     enable_utc=True,
     broker_connection_retry_on_startup=True,
 )
+
+# Task modules named `processing.py` inside the worker package are found automatically.
+celery_app.autodiscover_tasks(["ai_censur.worker"], related_name="processing")
