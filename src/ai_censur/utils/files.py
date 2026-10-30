@@ -12,17 +12,15 @@ from ai_censur.utils.constants import (
 )
 
 
-async def read_upload(file: UploadFile) -> bytes:
+async def read_upload(file: UploadFile, max_bytes: int | None = None) -> bytes:
+    limit = MAX_UPLOAD_SIZE_BYTES if max_bytes is None else max_bytes
     content = bytearray()
     while chunk := await file.read(READ_CHUNK_SIZE_BYTES):
         content.extend(chunk)
-        if len(content) > MAX_UPLOAD_SIZE_BYTES:
+        if len(content) > limit:
             raise HTTPException(
                 status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-                detail=(
-                    f"File exceeds the maximum size of "
-                    f"{MAX_UPLOAD_SIZE_BYTES // (1024 * 1024)} MB."
-                ),
+                detail=f"File exceeds the maximum size of {limit // (1024 * 1024)} MB.",
             )
     return bytes(content)
 

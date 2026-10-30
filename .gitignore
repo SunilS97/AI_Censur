@@ -8,6 +8,7 @@ wheels/
 
 # User-uploaded audio (privacy-sensitive)
 Uploads/
+SoundEffects/
 
 # Internal verification tests (not published)
 tests/

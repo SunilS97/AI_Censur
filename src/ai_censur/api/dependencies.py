@@ -9,9 +9,23 @@ from ai_censur.config import JWTSettings, get_jwt_settings
 from ai_censur.database.crud import get_user_by_id
 from ai_censur.database.models import User
 from ai_censur.database.session import get_session
+from ai_censur.services.audio import AudioService
+from ai_censur.services.sound_effect import SoundEffectService
 from ai_censur.utils.security import decode_access_token
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+
+
+def get_audio_service(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> AudioService:
+    return AudioService(session)
+
+
+def get_sound_effect_service(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> SoundEffectService:
+    return SoundEffectService(session)
 
 
 async def get_current_user(

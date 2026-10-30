@@ -1,5 +1,9 @@
+import json
 import logging
 import math
+import re
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NotRequired, TypedDict
 from uuid import UUID
@@ -8,16 +12,19 @@ import whisperx
 from better_profanity import profanity
 from pydub import AudioSegment
 from pydub.generators import Sine
-from sqlalchemy import Engine, create_engine, update
+from sqlalchemy import Engine, create_engine, select, update
 from sqlalchemy.orm import Session
 from sqlmodel import col
 
-from ai_censur.database.models import Audio, AudioStatus
+from ai_censur.database.models import Audio, AudioStatus, SoundEffect
 from ai_censur.database.session import DatabaseSettings
-from ai_censur.utils.constants import CENSORED_PREFIX, UPLOAD_DIR
+from ai_censur.utils.constants import CENSORED_PREFIX, SOUND_EFFECT_DIR, UPLOAD_DIR
 from ai_censur.utils.files import reserve_path
 
 logger = logging.getLogger(__name__)
+
+# Keeps letters, digits, underscores and apostrophes, so "Damn!," matches "damn".
+_WORD_NOISE = re.compile(r"[^\w']")
 
 
 class Word(TypedDict):
@@ -26,6 +33,18 @@ class Word(TypedDict):
     end: float
     score: float
     flagged: NotRequired[bool]
+
+
+@dataclass(frozen=True, slots=True)
+class _ClaimedAudio:
+    """What a stage needs from the audio row it just moved to `processing`."""
+
+    audio_path: str
+    transcription: list[Word] | None
+    use_beep: bool
+    user_list: list[str] | None
+    sound_effect_path: str | None
+    censored_file_path: str | None
 
 
 def create_sync_engine() -> Engine:
@@ -57,80 +76,193 @@ class AudioCensor:
             device=self.device,
         )
 
-    def censor_file(self, directory: Path, stored_name: str) -> str:
-        """Transcribe, flag profanity and beep it out; returns the censored file name."""
-        input_path = directory / stored_name
+    def run_transcription(self, audio_id: UUID) -> None:
+        """Stage 1: pending -> processing; transcribe and store the word segments."""
+        claimed = self._claim_audio(audio_id, AudioStatus.PENDING)
+        if claimed is None:
+            return
+        words = self.transcribe_audio(str(self._stored_path(claimed.audio_path)))[
+            "word_segments"
+        ]
+        self._store_transcription(audio_id, words)
+        logger.info("Audio %s transcribed", audio_id)
+
+    def run_detection(self, audio_id: UUID) -> None:
+        """Stage 2: flag default profanity and the user's words in the transcription."""
+        claimed = self._claim_audio(audio_id, AudioStatus.PROCESSING)
+        if claimed is None:
+            return
+        words = self.detect_profanity(
+            self._require_transcription(audio_id, claimed), claimed.user_list
+        )
+        self._store_transcription(audio_id, words)
+        logger.info("Audio %s analysed", audio_id)
+
+    def run_render(self, audio_id: UUID) -> None:
+        """Stage 3: censor the flagged words, then processing -> completed."""
+        claimed = self._claim_audio(audio_id, AudioStatus.PROCESSING)
+        if claimed is None:
+            return
+        words = self._require_transcription(audio_id, claimed)
+        input_path = self._stored_path(claimed.audio_path)
         censored_path = reserve_path(
-            directory, f"{CENSORED_PREFIX}{input_path.stem}", input_path.suffix
+            UPLOAD_DIR, f"{CENSORED_PREFIX}{input_path.stem}", input_path.suffix
+        )
+        sound_effect_path = (
+            str(SOUND_EFFECT_DIR / Path(claimed.sound_effect_path).name)
+            if claimed.sound_effect_path
+            else None
         )
         try:
-            transcription = self.transcribe_audio(str(input_path))
-            word_segments = self.detect_profanity(transcription["word_segments"])
             self.mute_audio(
-                word_segments, str(input_path), str(censored_path), beep=True
+                words,
+                str(input_path),
+                str(censored_path),
+                beep=claimed.use_beep,
+                sound_effect_path=sound_effect_path,
+            )
+            self._finish_audio(
+                audio_id,
+                AudioStatus.COMPLETED,
+                f"{UPLOAD_DIR.name}/{censored_path.name}",
             )
         except BaseException:
             censored_path.unlink(missing_ok=True)
             raise
-        return censored_path.name
+        # A re-render (after the user changed the options) replaces the old output.
+        if claimed.censored_file_path:
+            previous_name = Path(claimed.censored_file_path).name
+            if previous_name != censored_path.name:
+                (UPLOAD_DIR / previous_name).unlink(missing_ok=True)
+        logger.info("Audio %s censored", audio_id)
 
-    def process_audio(self, audio_id: UUID) -> AudioStatus | None:
-        """Run the pending -> processing -> completed/failed workflow for one record.
+    def on_failure(
+        self,
+        exc: BaseException,
+        task_id: str,
+        args: Sequence[Any],
+        kwargs: Mapping[str, Any],
+        einfo: Any = None,
+    ) -> None:
+        """Central failure handler: find the audio from the task arguments, mark it failed.
 
-        Returns the final status, or None when the record is missing or was already
-        claimed (so a duplicate delivery never censors the same audio twice).
+        Workers delegate here so no task handles failures itself. It never raises,
+        because it runs inside Celery's failure path.
         """
-        stored_path = self._claim_audio(audio_id)
-        if stored_path is None:
+        audio_id = self._audio_id_from_arguments(args, kwargs)
+        if audio_id is None:
+            logger.error(
+                "Task %s failed without a valid audio id (args=%r): %s",
+                task_id,
+                args,
+                exc,
+            )
+            return
+        logger.error("Task %s failed for audio %s", task_id, audio_id, exc_info=exc)
+        try:
+            self._mark_failed(audio_id)
+        except Exception:
+            logger.exception("Could not mark audio %s as failed", audio_id)
+
+    @staticmethod
+    def _audio_id_from_arguments(
+        args: Sequence[Any], kwargs: Mapping[str, Any]
+    ) -> UUID | None:
+        raw_id = kwargs.get("audio_id", args[0] if args else None)
+        try:
+            return UUID(str(raw_id))
+        except ValueError:
             return None
 
-        censored_name: str | None = None
-        try:
-            # Only the file name is trusted, so a stored path cannot leave Uploads/.
-            censored_name = self.censor_file(UPLOAD_DIR, Path(stored_path).name)
-            self._finish_audio(
-                audio_id, AudioStatus.COMPLETED, f"{UPLOAD_DIR.name}/{censored_name}"
-            )
-        except Exception:
-            logger.exception("Censoring failed for audio %s", audio_id)
-            if censored_name is not None:
-                (UPLOAD_DIR / censored_name).unlink(missing_ok=True)
-            return self._mark_failed(audio_id)
-        logger.info("Audio %s censored", audio_id)
-        return AudioStatus.COMPLETED
+    @staticmethod
+    def _stored_path(stored_path: str) -> Path:
+        # Only the file name is trusted, so a stored path cannot leave Uploads/.
+        return UPLOAD_DIR / Path(stored_path).name
 
-    def _claim_audio(self, audio_id: UUID) -> str | None:
-        # The status guard makes the pending -> processing move atomic.
+    @staticmethod
+    def _require_transcription(audio_id: UUID, claimed: "_ClaimedAudio") -> list[Word]:
+        if claimed.transcription is None:
+            raise ValueError(f"Audio {audio_id} has no stored transcription")
+        return claimed.transcription
+
+    def _claim_audio(
+        self, audio_id: UUID, expected_status: AudioStatus
+    ) -> "_ClaimedAudio | None":
+        """Atomically move an audio to `processing` and load what the stage needs.
+
+        The status guard makes a duplicate delivery, or a stage run on an audio
+        that already failed or completed, a no-op that returns None.
+        """
         statement = (
             update(Audio)
-            .where(col(Audio.id) == audio_id, col(Audio.status) == AudioStatus.PENDING)
+            .where(col(Audio.id) == audio_id, col(Audio.status) == expected_status)
             .values(status=AudioStatus.PROCESSING)
-            .returning(col(Audio.uncensored_file_path))
+            .returning(
+                col(Audio.uncensored_file_path),
+                col(Audio.transcription),
+                col(Audio.use_beep),
+                col(Audio.user_list),
+                col(Audio.sound_effect_id),
+                col(Audio.censored_file_path),
+            )
         )
         with Session(self.engine) as session, session.begin():
-            stored_path = session.execute(statement).scalar_one_or_none()
-        if stored_path is None:
-            logger.warning("Audio %s is missing or not pending; skipping", audio_id)
-        return stored_path
+            row = session.execute(statement).one_or_none()
+            if row is None:
+                logger.warning(
+                    "Audio %s is missing or not %s; skipping",
+                    audio_id,
+                    expected_status.value,
+                )
+                return None
+            sound_effect_path = (
+                session.execute(
+                    select(col(SoundEffect.file_path)).where(
+                        col(SoundEffect.id) == row.sound_effect_id
+                    )
+                ).scalar_one_or_none()
+                if row.sound_effect_id is not None
+                else None
+            )
+        return _ClaimedAudio(
+            audio_path=row.uncensored_file_path,
+            transcription=row.transcription,
+            use_beep=row.use_beep,
+            user_list=row.user_list,
+            sound_effect_path=sound_effect_path,
+            censored_file_path=row.censored_file_path,
+        )
+
+    def _store_transcription(self, audio_id: UUID, words: list[Word]) -> None:
+        # Round-trip through JSON so numpy scalars from WhisperX become plain floats.
+        serialisable = json.loads(json.dumps(words, default=float))
+        self._update_audio(audio_id, transcription=serialisable)
 
     def _finish_audio(
         self, audio_id: UUID, status: AudioStatus, censored_file_path: str | None
     ) -> None:
+        self._update_audio(
+            audio_id, status=status, censored_file_path=censored_file_path
+        )
+
+    def _mark_failed(self, audio_id: UUID) -> None:
+        # Never overwrite a completed audio, even if a late failure arrives.
         statement = (
             update(Audio)
-            .where(col(Audio.id) == audio_id)
-            .values(status=status, censored_file_path=censored_file_path)
+            .where(
+                col(Audio.id) == audio_id,
+                col(Audio.status).in_((AudioStatus.PENDING, AudioStatus.PROCESSING)),
+            )
+            .values(status=AudioStatus.FAILED)
         )
         with Session(self.engine) as session, session.begin():
             session.execute(statement)
 
-    def _mark_failed(self, audio_id: UUID) -> AudioStatus | None:
-        try:
-            self._finish_audio(audio_id, AudioStatus.FAILED, None)
-        except Exception:
-            logger.exception("Could not mark audio %s as failed", audio_id)
-            return None
-        return AudioStatus.FAILED
+    def _update_audio(self, audio_id: UUID, **values: Any) -> None:
+        with Session(self.engine) as session, session.begin():
+            session.execute(
+                update(Audio).where(col(Audio.id) == audio_id).values(**values)
+            )
 
     def transcribe_audio(self, audio_file_path: str) -> dict[str, Any]:
         if not isinstance(audio_file_path, str):
@@ -170,15 +302,46 @@ class AudioCensor:
             "word_segments": word_segments,
         }
 
-    def detect_profanity(self, word_segments: list[Word]) -> list[Word]:
+    def detect_profanity(
+        self,
+        word_segments: list[Word],
+        custom_words: Iterable[str] | None = None,
+    ) -> list[Word]:
+        """Flag default profanity plus any of the user's own words (whole words only)."""
+        blocked = {
+            normalised
+            for custom_word in custom_words or ()
+            if (normalised := self._normalise_word(custom_word))
+        }
         for word_segment in word_segments:
             word_text = word_segment.get("word")
             if not isinstance(word_text, str):
                 raise TypeError("Each word segment must contain a string 'word' field")
 
-            word_segment["flagged"] = profanity.contains_profanity(word_text)
+            word_segment["flagged"] = (
+                profanity.contains_profanity(word_text)
+                or self._normalise_word(word_text) in blocked
+            )
 
         return word_segments
+
+    @staticmethod
+    def _normalise_word(word: str) -> str:
+        return _WORD_NOISE.sub("", word).casefold()
+
+    @staticmethod
+    def _load_sound_effect(path: Path, reference: AudioSegment) -> AudioSegment:
+        if not path.is_file():
+            raise FileNotFoundError(f"Sound effect file does not exist: {path}")
+        with path.open("rb") as effect_file:
+            effect = AudioSegment.from_file(effect_file, format=path.suffix[1:])
+        if len(effect) == 0:
+            raise ValueError("Sound effect file contains no audio")
+        return (
+            effect.set_frame_rate(reference.frame_rate)
+            .set_channels(reference.channels)
+            .set_sample_width(reference.sample_width)
+        )
 
     def mute_audio(
         self,
@@ -186,13 +349,21 @@ class AudioCensor:
         input_audio_path: str,
         output_audio_path: str,
         beep: bool = False,
+        sound_effect_path: str | None = None,
     ) -> Path:
+        """Replace flagged words with a sound effect, a beep or silence (in that order).
+
+        A sound effect longer than the word is cut to fit; a shorter one is followed
+        by silence, so the original word is never audible and the timing is kept.
+        """
         if not isinstance(input_audio_path, str):
             raise TypeError("input_audio_path must be a string")
         if not isinstance(output_audio_path, str):
             raise TypeError("output_audio_path must be a string")
         if not isinstance(beep, bool):
             raise TypeError("beep must be a boolean")
+        if sound_effect_path is not None and not isinstance(sound_effect_path, str):
+            raise TypeError("sound_effect_path must be a string")
 
         input_path = Path(input_audio_path)
         output_path = Path(output_audio_path)
@@ -211,6 +382,11 @@ class AudioCensor:
 
         with input_path.open("rb") as input_file:
             audio = AudioSegment.from_file(input_file, format=input_path.suffix[1:])
+        sound_effect = (
+            self._load_sound_effect(Path(sound_effect_path), audio)
+            if sound_effect_path
+            else None
+        )
         for word_segment in word_segments:
             flagged = word_segment.get("flagged", False)
             if not isinstance(flagged, bool):
@@ -246,17 +422,29 @@ class AudioCensor:
             if start_ms >= len(audio):
                 continue
             end_ms = min(max(end_ms, start_ms + 1), len(audio))
-            if beep:
+            duration = end_ms - start_ms
+            if sound_effect is not None:
+                replacement = sound_effect[:duration]
+                if len(replacement) < duration:
+                    replacement += (
+                        AudioSegment.silent(
+                            duration=duration - len(replacement),
+                            frame_rate=audio.frame_rate,
+                        )
+                        .set_channels(audio.channels)
+                        .set_sample_width(audio.sample_width)
+                    )
+            elif beep:
                 replacement = (
                     Sine(1000, sample_rate=audio.frame_rate)
-                    .to_audio_segment(duration=end_ms - start_ms)
+                    .to_audio_segment(duration=duration)
                     .set_channels(audio.channels)
                     .set_sample_width(audio.sample_width)
                 )
             else:
                 replacement = (
                     AudioSegment.silent(
-                        duration=end_ms - start_ms,
+                        duration=duration,
                         frame_rate=audio.frame_rate,
                     )
                     .set_channels(audio.channels)

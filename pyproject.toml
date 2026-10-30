@@ -21,14 +21,10 @@ dependencies = [
     "pyjwt>=2.15.1",
     "python-multipart>=0.0.32",
     "redis>=8.1.0",
-    "rich>=15.0.0",
     "scalar-fastapi>=1.9.1",
     "sqlmodel>=0.0.48",
     "whisperx>=3.8.6",
 ]
-
-[project.scripts]
-ai-censur = "ai_censur:main"
 
 [build-system]
 requires = ["uv_build>=0.13.1,<0.14.0"]

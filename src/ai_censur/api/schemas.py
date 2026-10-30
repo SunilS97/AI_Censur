@@ -1,6 +1,6 @@
 from datetime import datetime
 from pathlib import PurePosixPath, PureWindowsPath
-from typing import Any
+from typing import Annotated, Any
 from uuid import UUID
 
 from pydantic import (
@@ -9,11 +9,17 @@ from pydantic import (
     EmailStr,
     Field,
     SecretStr,
+    StringConstraints,
     field_validator,
 )
 
 from ai_censur.database.models import AudioStatus
-from ai_censur.utils.constants import PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH
+from ai_censur.utils.constants import (
+    MAX_USER_WORD_LENGTH,
+    MAX_USER_WORDS,
+    PASSWORD_MAX_LENGTH,
+    PASSWORD_MIN_LENGTH,
+)
 
 
 class AudioResponseBase(BaseModel):
@@ -53,6 +59,79 @@ class AudioRead(AudioResponseBase):
 
 class AudioCreateResponse(AudioResponseBase):
     """Response of POST /censor."""
+
+    user_list: list[str] | None = Field(
+        default=None,
+        description="Extra words to censor on top of the default list; null if none.",
+        examples=[["away"]],
+    )
+    use_beep: bool = Field(
+        default=False,
+        description="Whether censored words are covered with a beep instead of silence.",
+    )
+    sound_effect_id: UUID | None = Field(
+        default=None,
+        description="ID of the sound effect played over censored words; null if none.",
+        examples=["9b3ab33f-2003-4edc-abb4-c3c2544f509b"],
+    )
+
+
+class CensorOptions(BaseModel):
+    """Body of PATCH /audio/{audio_id}.
+
+    Only the fields that are sent are changed; an omitted field keeps its stored value.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    user_list: (
+        list[
+            Annotated[
+                str,
+                StringConstraints(
+                    strip_whitespace=True, min_length=1, max_length=MAX_USER_WORD_LENGTH
+                ),
+            ]
+        ]
+        | None
+    ) = Field(
+        default=None,
+        max_length=MAX_USER_WORDS,
+        description=(
+            "Extra words to censor, on top of the default profanity list. "
+            "Send null or an empty list to clear."
+        ),
+        examples=[["pineapple", "darn"]],
+    )
+    use_beep: bool = Field(
+        default=False,
+        description="Cover censored words with a beep instead of silence.",
+    )
+    sound_effect_id: UUID | None = Field(
+        default=None,
+        description=(
+            "ID of one of your sound effects (see `GET /sfx`) to play over censored "
+            "words. It takes priority over the beep. Send null to clear."
+        ),
+    )
+
+
+class SoundEffectRead(BaseModel):
+    """A sound effect as returned by /sfx; never exposes file paths or directories."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID = Field(
+        description="ID of the sound effect.",
+        examples=["59784ccb-4412-42df-bb67-38f60e06f843"],
+    )
+    created_at: datetime = Field(
+        description="When the sound effect was uploaded (UTC).",
+        examples=["2026-04-17T12:50:35.663387"],
+    )
+    name: str = Field(
+        description="Display name of the sound effect.", examples=["boing"]
+    )
 
 
 class UserCreate(BaseModel):
@@ -121,6 +200,50 @@ SIGNUP_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     },
     422: {"description": "Invalid email or password."},
     500: {"model": ErrorResponse, "description": "Creating the account failed."},
+}
+
+SOUND_EFFECT_ADD_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
+    401: {"model": ErrorResponse, "description": "Missing or invalid bearer token."},
+    400: {
+        "model": ErrorResponse,
+        "description": "Missing filename, empty or unreadable file, or blank name.",
+    },
+    413: {"model": ErrorResponse, "description": "File exceeds the 5 MB limit."},
+    415: {
+        "model": ErrorResponse,
+        "description": "Unsupported type. Allowed: .wav, .mp3, .m4a, .flac, .ogg.",
+    },
+    422: {"description": "The name is longer than 100 characters."},
+    500: {
+        "model": ErrorResponse,
+        "description": "Saving the file or recording the sound effect failed.",
+    },
+}
+
+SOUND_EFFECT_LIST_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
+    401: {"model": ErrorResponse, "description": "Missing or invalid bearer token."},
+    500: {"model": ErrorResponse, "description": "Reading the sound effects failed."},
+}
+
+UPDATE_AUDIO_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
+    401: {"model": ErrorResponse, "description": "Missing or invalid bearer token."},
+    404: {
+        "model": ErrorResponse,
+        "description": (
+            "No audio with this ID, or no sound effect with this ID, exists for the "
+            "authenticated user."
+        ),
+    },
+    409: {
+        "model": ErrorResponse,
+        "description": "The audio is still being processed or has no transcription yet.",
+    },
+    422: {"description": "Invalid ID or options."},
+    500: {"model": ErrorResponse, "description": "Updating the audio failed."},
+    503: {
+        "model": ErrorResponse,
+        "description": "The processing queue is unavailable; nothing was changed.",
+    },
 }
 
 AUDIO_NOT_FOUND_RESPONSES: dict[int | str, dict[str, Any]] = {

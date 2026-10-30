@@ -8,12 +8,14 @@ import anyio.to_thread
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ai_censur.api.dependencies import get_current_user
+from ai_censur.api.dependencies import get_audio_service, get_current_user
 from ai_censur.api.schemas import (
     AUDIO_NOT_FOUND_RESPONSES,
     CENSOR_ERROR_RESPONSES,
+    UPDATE_AUDIO_ERROR_RESPONSES,
     AudioCreateResponse,
     AudioRead,
+    CensorOptions,
 )
 from ai_censur.database.crud import (
     delete_audio_record,
@@ -22,9 +24,16 @@ from ai_censur.database.crud import (
 )
 from ai_censur.database.models import Audio, User
 from ai_censur.database.session import get_session
+from ai_censur.services.audio import (
+    AudioNotEditableError,
+    AudioNotFoundError,
+    AudioService,
+    ProcessingQueueUnavailableError,
+    SoundEffectNotFoundError,
+)
 from ai_censur.utils.constants import ALLOWED_AUDIO_EXTENSIONS, UPLOAD_DIR
 from ai_censur.utils.files import read_upload, remove_files, sanitize_stem, write_file
-from ai_censur.worker.processing import process_audio
+from ai_censur.worker.processing import queue_audio_processing
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +112,7 @@ async def censor(
 
     try:
         audio = await save_audio_record(
-            session, f"{UPLOAD_DIR.name}/{stored_name}", current_user.id
+            session, stored_name, f"{UPLOAD_DIR.name}/{stored_name}", current_user.id
         )
     except Exception as exc:
         logger.exception("Failed to store the audio record")
@@ -116,7 +125,7 @@ async def censor(
 
     try:
         # The record is committed first, so the worker can always find it.
-        await anyio.to_thread.run_sync(process_audio.delay, str(audio.id))
+        await anyio.to_thread.run_sync(queue_audio_processing, audio.id)
     except Exception as exc:
         logger.exception("Failed to queue audio %s for processing", audio.id)
         try:
@@ -162,3 +171,55 @@ async def read_audio(
             detail="Audio not found.",
         )
     return audio
+
+
+@router.patch(
+    "/audio/{audio_id}",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=AudioRead,
+    responses=UPDATE_AUDIO_ERROR_RESPONSES,
+    summary="Change how an audio is censored",
+    description=(
+        "Requires a valid bearer token, and the audio must belong to the "
+        "authenticated user. Send any of `user_list`, `use_beep` and "
+        "`sound_effect_id`; omitted fields keep their stored value. A changed "
+        "`user_list` re-runs profanity detection and the render; any other change "
+        "re-runs only the render. The audio goes back to `processing` and the "
+        "censored file is replaced when it completes. Only `completed` or `failed` "
+        "audio with a transcription can be changed (otherwise 409)."
+    ),
+)
+async def update_audio(
+    audio_id: UUID,
+    options: CensorOptions,
+    service: Annotated[AudioService, Depends(get_audio_service)],
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> Audio:
+    try:
+        return await service.update_audio(current_user.id, audio_id, options)
+    except AudioNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Audio not found.",
+        ) from exc
+    except SoundEffectNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Sound effect not found.",
+        ) from exc
+    except AudioNotEditableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The audio is still being processed or has no transcription yet.",
+        ) from exc
+    except ProcessingQueueUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The processing queue is unavailable. Please try again later.",
+        ) from exc
+    except Exception as exc:
+        logger.exception("Failed to update audio %s", audio_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update the audio.",
+        ) from exc
