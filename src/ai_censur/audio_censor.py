@@ -105,9 +105,22 @@ class AudioCensor:
             return
         words = self._require_transcription(audio_id, claimed)
         input_path = self._stored_path(claimed.audio_path)
-        censored_path = reserve_path(
-            UPLOAD_DIR, f"{CENSORED_PREFIX}{input_path.stem}", input_path.suffix
+        # A re-render keeps the existing censored name; it is built beside the old
+        # file and swapped in only once it succeeds, so a failure keeps the old output.
+        previous_name = (
+            Path(claimed.censored_file_path).name
+            if claimed.censored_file_path
+            else None
         )
+        if previous_name:
+            final_path = UPLOAD_DIR / previous_name
+            censored_path = reserve_path(
+                UPLOAD_DIR, f"{final_path.stem}.rendering", final_path.suffix
+            )
+        else:
+            censored_path = final_path = reserve_path(
+                UPLOAD_DIR, f"{CENSORED_PREFIX}{input_path.stem}", input_path.suffix
+            )
         sound_effect_path = (
             str(SOUND_EFFECT_DIR / Path(claimed.sound_effect_path).name)
             if claimed.sound_effect_path
@@ -121,19 +134,16 @@ class AudioCensor:
                 beep=claimed.use_beep,
                 sound_effect_path=sound_effect_path,
             )
+            if censored_path != final_path:
+                censored_path.replace(final_path)
             self._finish_audio(
                 audio_id,
                 AudioStatus.COMPLETED,
-                f"{UPLOAD_DIR.name}/{censored_path.name}",
+                f"{UPLOAD_DIR.name}/{final_path.name}",
             )
         except BaseException:
             censored_path.unlink(missing_ok=True)
             raise
-        # A re-render (after the user changed the options) replaces the old output.
-        if claimed.censored_file_path:
-            previous_name = Path(claimed.censored_file_path).name
-            if previous_name != censored_path.name:
-                (UPLOAD_DIR / previous_name).unlink(missing_ok=True)
         logger.info("Audio %s censored", audio_id)
 
     def on_failure(
