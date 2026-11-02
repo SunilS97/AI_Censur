@@ -15,6 +15,9 @@ from pydantic import (
 
 from ai_censur.database.models import AudioStatus
 from ai_censur.utils.constants import (
+    DEFAULT_SUBTITLE_SYMBOL,
+    MAX_SUBTITLE_SYMBOLS,
+    MAX_SUBTITLE_VISIBLE_CHARS,
     MAX_USER_WORD_LENGTH,
     MAX_USER_WORDS,
     PASSWORD_MAX_LENGTH,
@@ -114,6 +117,43 @@ class CensorOptions(BaseModel):
             "words. It takes priority over the beep. Send null to clear."
         ),
     )
+
+
+class SubtitleOptions(BaseModel):
+    """Optional body of POST /audio/{audio_id}/subtitle."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=MAX_SUBTITLE_SYMBOLS,
+        description=(
+            "One or more symbols used to mask flagged words. With several, one of "
+            f"them is picked at random for the whole subtitle. Default `{DEFAULT_SUBTITLE_SYMBOL}`."
+        ),
+        examples=["*", "#*@"],
+    )
+    visible_chars: int = Field(
+        default=1,
+        ge=0,
+        le=MAX_SUBTITLE_VISIBLE_CHARS,
+        description=(
+            "How many leading characters of a flagged word stay visible; at least "
+            "one character is always masked."
+        ),
+        examples=[1, 3],
+    )
+
+    @field_validator("symbol")
+    @classmethod
+    def _printable_symbols_only(cls, value: str | None) -> str | None:
+        # Whitespace or control characters would break the SRT cue layout.
+        if value is not None and not all(
+            char.isprintable() and not char.isspace() for char in value
+        ):
+            raise ValueError("symbol must not contain whitespace or control characters")
+        return value
 
 
 class SoundEffectRead(BaseModel):
@@ -275,4 +315,18 @@ CENSOR_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
         "model": ErrorResponse,
         "description": "The processing queue is unavailable; nothing was stored.",
     },
+}
+
+SUBTITLE_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
+    401: {"model": ErrorResponse, "description": "Missing or invalid bearer token."},
+    404: {
+        "model": ErrorResponse,
+        "description": "No audio with this ID exists for the authenticated user.",
+    },
+    409: {
+        "model": ErrorResponse,
+        "description": "The audio has not finished censoring yet (or it failed).",
+    },
+    422: {"description": "Invalid ID, symbol or visible_chars."},
+    500: {"model": ErrorResponse, "description": "Building the subtitle failed."},
 }

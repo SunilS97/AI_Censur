@@ -1,4 +1,5 @@
 import logging
+import secrets
 from collections.abc import Iterable
 from functools import partial
 from uuid import UUID
@@ -6,13 +7,15 @@ from uuid import UUID
 import anyio.to_thread
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ai_censur.api.schemas import CensorOptions
+from ai_censur.api.schemas import CensorOptions, SubtitleOptions
 from ai_censur.database.crud import (
     get_audio_for_user,
     get_sound_effect_for_user,
     update_audio_if_status,
 )
 from ai_censur.database.models import Audio, AudioStatus
+from ai_censur.utils.constants import DEFAULT_SUBTITLE_SYMBOL
+from ai_censur.utils.subtitles import build_srt
 from ai_censur.worker.processing import queue_audio_reprocessing
 
 logger = logging.getLogger(__name__)
@@ -31,6 +34,10 @@ class SoundEffectNotFoundError(Exception):
 
 class AudioNotEditableError(Exception):
     """The audio is still processing, or was never transcribed."""
+
+
+class AudioNotCompletedError(Exception):
+    """Flags are only final once the audio is completed; earlier text may be unmasked."""
 
 
 class ProcessingQueueUnavailableError(Exception):
@@ -113,6 +120,24 @@ class AudioService:
 
         await self._session.refresh(audio)
         return audio
+
+    async def build_subtitle(
+        self, user_id: UUID, audio_id: UUID, options: SubtitleOptions
+    ) -> str:
+        """Return the stored transcription as SRT with the flagged words masked.
+
+        One symbol is chosen at random from `options.symbol` for the whole subtitle.
+        Raises AudioNotFoundError, or AudioNotCompletedError while the audio is not
+        completed, since only then are the flags final.
+        """
+        audio = await get_audio_for_user(self._session, audio_id, user_id)
+        if audio is None:
+            raise AudioNotFoundError(audio_id)
+        if audio.status is not AudioStatus.COMPLETED or audio.transcription is None:
+            raise AudioNotCompletedError(audio_id)
+
+        symbol = secrets.choice(options.symbol or DEFAULT_SUBTITLE_SYMBOL)
+        return build_srt(audio.transcription, symbol, options.visible_chars)
 
     async def _restore(self, audio_id: UUID, previous: dict[str, object]) -> None:
         """Put the old options and status back after the queue refused the job."""
