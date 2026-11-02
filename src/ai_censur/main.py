@@ -5,10 +5,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from scalar_fastapi import get_scalar_api_reference
 
-from ai_censur.api.auth_router import router as auth_router
-from ai_censur.api.router import router
-from ai_censur.api.sound_effect_router import router as sound_effect_router
-from ai_censur.api.user_router import router as user_router
+from ai_censur.api.routers import all_routers
 from ai_censur.config import get_jwt_settings
 from ai_censur.database.session import check_database_connection, dispose_engine
 from ai_censur.utils.constants import UPLOAD_DIR, UPLOADS_URL_PATH
@@ -45,10 +42,8 @@ app = FastAPI(
 )
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 app.mount(UPLOADS_URL_PATH, StaticFiles(directory=UPLOAD_DIR), name="uploads")
-app.include_router(router)
-app.include_router(sound_effect_router)
-app.include_router(user_router)
-app.include_router(auth_router)
+for router in all_routers:
+    app.include_router(router)
 
 
 @app.get("/docs", include_in_schema=False)

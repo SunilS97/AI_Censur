@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ai_censur.api.schemas import LOGIN_ERROR_RESPONSES, Token
+from ai_censur.api.schemas.auth import LOGIN_ERROR_RESPONSES, Token
 from ai_censur.config import JWTSettings, get_jwt_settings
 from ai_censur.database.session import get_session
 from ai_censur.services.auth import authenticate_user

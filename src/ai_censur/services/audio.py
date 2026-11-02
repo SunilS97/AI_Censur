@@ -2,19 +2,20 @@ import logging
 import secrets
 from collections.abc import Iterable
 from functools import partial
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from uuid import UUID
 
 import anyio.to_thread
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ai_censur.api.schemas import CensorOptions, SubtitleOptions
+from ai_censur.api.schemas.audio import CensorOptions, SubtitleOptions
 from ai_censur.database.crud import (
     get_audio_for_user,
     get_sound_effect_for_user,
     update_audio_if_status,
 )
 from ai_censur.database.models import Audio, AudioStatus
-from ai_censur.utils.constants import DEFAULT_SUBTITLE_SYMBOL
+from ai_censur.utils.constants import DEFAULT_SUBTITLE_SYMBOL, UPLOAD_DIR
 from ai_censur.utils.subtitles import build_srt
 from ai_censur.worker.processing import queue_audio_reprocessing
 
@@ -42,6 +43,10 @@ class AudioNotCompletedError(Exception):
 
 class ProcessingQueueUnavailableError(Exception):
     """The Celery broker could not accept the job."""
+
+
+class CensoredFileUnavailableError(Exception):
+    """The audio is completed but its censored file is missing from storage."""
 
 
 def _clean_words(words: Iterable[str] | None) -> list[str] | None:
@@ -138,6 +143,31 @@ class AudioService:
 
         symbol = secrets.choice(options.symbol or DEFAULT_SUBTITLE_SYMBOL)
         return build_srt(audio.transcription, symbol, options.visible_chars)
+
+    async def get_censored_file(self, user_id: UUID, audio_id: UUID) -> Path:
+        """Return the path of the user's finished censored file, ready to send.
+
+        Raises AudioNotFoundError (unknown or foreign audio), AudioNotCompletedError
+        (not finished, or no censored file recorded) or CensoredFileUnavailableError
+        (recorded but missing on disk). Only the stored file name is trusted, so the
+        path can never leave the uploads directory.
+        """
+        audio = await get_audio_for_user(self._session, audio_id, user_id)
+        if audio is None:
+            raise AudioNotFoundError(audio_id)
+        if audio.status is not AudioStatus.COMPLETED or not audio.censored_file_path:
+            raise AudioNotCompletedError(audio_id)
+
+        file_name = PurePosixPath(
+            PureWindowsPath(audio.censored_file_path).as_posix()
+        ).name
+        path = UPLOAD_DIR / file_name
+        if not file_name or not await anyio.to_thread.run_sync(path.is_file):
+            logger.error(
+                "Censored file of audio %s is missing: %s", audio_id, file_name
+            )
+            raise CensoredFileUnavailableError(audio_id)
+        return path
 
     async def _restore(self, audio_id: UUID, previous: dict[str, object]) -> None:
         """Put the old options and status back after the queue refused the job."""

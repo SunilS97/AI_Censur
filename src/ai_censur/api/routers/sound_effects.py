@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, status
 
 from ai_censur.api.dependencies import get_current_user, get_sound_effect_service
-from ai_censur.api.schemas import (
+from ai_censur.api.schemas.sound_effects import (
     SOUND_EFFECT_ADD_ERROR_RESPONSES,
     SOUND_EFFECT_LIST_ERROR_RESPONSES,
     SoundEffectRead,

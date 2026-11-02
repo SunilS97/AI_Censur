@@ -6,13 +6,14 @@ from uuid import UUID
 import anyio
 import anyio.to_thread
 from fastapi import APIRouter, Body, Depends, HTTPException, UploadFile, status
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_censur.api.dependencies import get_audio_service, get_current_user
-from ai_censur.api.schemas import (
+from ai_censur.api.schemas.audio import (
     AUDIO_NOT_FOUND_RESPONSES,
     CENSOR_ERROR_RESPONSES,
+    DOWNLOAD_ERROR_RESPONSES,
     SUBTITLE_ERROR_RESPONSES,
     UPDATE_AUDIO_ERROR_RESPONSES,
     AudioCreateResponse,
@@ -32,6 +33,7 @@ from ai_censur.services.audio import (
     AudioNotEditableError,
     AudioNotFoundError,
     AudioService,
+    CensoredFileUnavailableError,
     ProcessingQueueUnavailableError,
     SoundEffectNotFoundError,
 )
@@ -175,6 +177,59 @@ async def read_audio(
             detail="Audio not found.",
         )
     return audio
+
+
+@router.get(
+    "/audio/{audio_id}/download",
+    response_class=FileResponse,
+    responses={
+        **DOWNLOAD_ERROR_RESPONSES,
+        200: {
+            "content": {"audio/*": {}},
+            "description": "The censored audio file as an attachment.",
+        },
+    },
+    summary="Download the censored audio",
+    description=(
+        "Requires a valid bearer token, and the audio must belong to the "
+        "authenticated user. Returns the censored audio file as a download. Only "
+        "`completed` audio is available (otherwise 409); the uncensored original is "
+        "never returned."
+    ),
+)
+async def download_audio(
+    audio_id: UUID,
+    service: Annotated[AudioService, Depends(get_audio_service)],
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> FileResponse:
+    try:
+        path = await service.get_censored_file(current_user.id, audio_id)
+    except AudioNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Audio not found.",
+        ) from exc
+    except AudioNotCompletedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The audio has not finished censoring yet.",
+        ) from exc
+    except CensoredFileUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="The censored file is no longer available.",
+        ) from exc
+    except Exception as exc:
+        logger.exception("Failed to prepare the download for audio %s", audio_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to download the audio.",
+        ) from exc
+    return FileResponse(
+        path,
+        filename=path.name,
+        headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "private"},
+    )
 
 
 @router.patch(

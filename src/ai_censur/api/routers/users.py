@@ -4,7 +4,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ai_censur.api.schemas import SIGNUP_ERROR_RESPONSES, UserCreate, UserRead
+from ai_censur.api.schemas.users import SIGNUP_ERROR_RESPONSES, UserCreate, UserRead
 from ai_censur.database.crud import add_user
 from ai_censur.database.exceptions import EmailAlreadyRegisteredError
 from ai_censur.database.models import User
