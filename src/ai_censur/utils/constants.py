@@ -4,7 +4,6 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 UPLOAD_DIR = PROJECT_ROOT / "Uploads"
 SOUND_EFFECT_DIR = PROJECT_ROOT / "SoundEffects"
-UPLOADS_URL_PATH = "/uploads"
 CENSORED_PREFIX = "Censored_"
 MAX_UPLOAD_SIZE_BYTES = 50 * 1024 * 1024
 # Sound effects are short clips, so they get a much tighter cap than full recordings.

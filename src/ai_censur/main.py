@@ -2,13 +2,12 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
 from scalar_fastapi import get_scalar_api_reference
 
 from ai_censur.api.routers import all_routers
 from ai_censur.config import get_jwt_settings
 from ai_censur.database.session import check_database_connection, dispose_engine
-from ai_censur.utils.constants import UPLOAD_DIR, UPLOADS_URL_PATH
+from ai_censur.utils.constants import UPLOAD_DIR
 from ai_censur.utils.system import ensure_ffmpeg_available
 
 API_DESCRIPTION = """
@@ -41,7 +40,6 @@ app = FastAPI(
     redoc_url=None,
 )
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-app.mount(UPLOADS_URL_PATH, StaticFiles(directory=UPLOAD_DIR), name="uploads")
 for router in all_routers:
     app.include_router(router)
 
